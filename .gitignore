@@ -53,6 +53,9 @@ coverage.xml
 *.mo
 *.pot
 
+#uv 
+uv.lock
+
 # Django stuff:
 *.log
 local_settings.py
