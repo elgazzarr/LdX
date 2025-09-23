@@ -40,12 +40,16 @@ def main():
     print(f"   - Original points: {len(times)}")
     print(f"   - Observed points: {len(observed_times)} ({len(observed_times)/len(times)*100:.1f}%)")
 
-    # Normalize data
-    normalized_obs, norm_params = ldx.utils.normalize_data(observed_data, method="standard")
+    # Normalize data using the full dataset to get consistent normalization parameters
+    full_normalized_obs, norm_params = ldx.utils.normalize_data(observations, method="standard")
 
     # For irregular data, we'll work with the full time grid but use masking
-    # Create padded sequences with the full time grid
-    full_normalized_obs = ldx.utils.normalize_data(observations, method="standard")[0]
+    # Apply the same normalization parameters to observed data
+    if norm_params["method"] == "standard":
+        normalized_obs = (observed_data - norm_params["mean"]) / norm_params["std"]
+    else:
+        # Handle other normalization methods if needed
+        normalized_obs = observed_data
 
     # Create training data (reshape for batch processing)
     train_obs = full_normalized_obs[None, ...]  # Add batch dimension
@@ -99,7 +103,7 @@ def main():
     print(f"\n🏋️ Setting up training for irregular data...")
 
     learning_rate = 5e-4
-    optimizer = optax.adam(learning_rate)
+    optimizer = nnx.Optimizer(model, optax.adam(learning_rate), wrt=nnx.Param)
 
     # Create trainer with custom loss
     trainer = ldx.inference.VariationalTrainer(
@@ -114,20 +118,19 @@ def main():
     print(f"   - Beta annealing with low final beta")
 
     # Training loop
-    n_epochs = 200
+    n_epochs = 5  # Quick test for visualization fix
     print(f"\n🚂 Training for {n_epochs} epochs...")
 
-    params = model  # Placeholder for actual parameter handling
     train_losses = []
 
     for epoch in range(n_epochs):
         key, train_key = jax.random.split(key)
 
         # Training step
-        params, train_metrics = trainer.train_step(
-            params,
-            train_obs[0],
-            train_times[0],
+        model, train_metrics = trainer.train_step(
+            model,
+            train_obs,
+            train_times,
             train_key,
             epoch
         )
@@ -147,8 +150,8 @@ def main():
     key, pred_key = jax.random.split(key)
 
     # Forward pass
-    reconstructed_obs, latent_mean, latent_logvar, latent_trajectory = model.apply(
-        params, train_obs, train_times, pred_key
+    reconstructed_obs, latent_mean, latent_logvar, latent_trajectory = model(
+        train_obs, train_times, pred_key
     )
 
     # Extract results
@@ -157,29 +160,30 @@ def main():
 
     # Denormalize
     reconstructed_obs_denorm = ldx.utils.denormalize_data(reconstructed_obs, norm_params)
-    observed_data_denorm = ldx.utils.denormalize_data(observed_data, norm_params)
+    # observed_data is already the original (pre-normalization) data, so no need to denormalize
 
     print(f"   - Reconstructed full time series: {reconstructed_obs_denorm.shape}")
 
     # Compute metrics on observed points only
     observed_indices = jnp.where(observation_mask)[0]
-    pred_observed = reconstructed_obs_denorm[observed_indices]
+    # Remove batch dimension before indexing
+    pred_observed = reconstructed_obs_denorm[0][observed_indices]  # Shape: (306, 3)
 
     if isinstance(reconstructed_obs, tuple):
         # Handle Gaussian predictions
-        mean_pred = reconstructed_obs[0][observed_indices]
-        logvar_pred = reconstructed_obs[1][observed_indices]
+        mean_pred = reconstructed_obs[0][0][observed_indices]  # Remove batch dim first
+        logvar_pred = reconstructed_obs[1][0][observed_indices]  # Remove batch dim first
         mean_pred_denorm = ldx.utils.denormalize_data(mean_pred, norm_params)
 
         metrics = ldx.utils.compute_all_metrics(
             (mean_pred_denorm, logvar_pred),
-            observed_data_denorm,
+            observed_data,
             probabilistic=True
         )
     else:
         metrics = ldx.utils.compute_all_metrics(
             pred_observed,
-            observed_data_denorm
+            observed_data
         )
 
     print(f"\n📈 Evaluation Metrics (on observed points):")
@@ -209,20 +213,20 @@ def main():
         ax.plot(times, observations[:, dim], 'b-', alpha=0.3, label='True (full)', linewidth=1)
 
         # Plot observed points
-        ax.scatter(observed_times, observed_data_denorm[:, dim],
+        ax.scatter(observed_times, observed_data[:, dim],
                   color='red', alpha=0.7, s=20, label='Observed', zorder=5)
 
         # Plot reconstruction
         if isinstance(reconstructed_obs, tuple):
             mean_recon = ldx.utils.denormalize_data(reconstructed_obs[0], norm_params)
             std_recon = jnp.exp(0.5 * reconstructed_obs[1])
-            ax.plot(times, mean_recon[:, dim], 'g-', label='Reconstructed', linewidth=2)
+            ax.plot(times, mean_recon[0, :, dim], 'g-', label='Reconstructed', linewidth=2)
             ax.fill_between(times,
-                           mean_recon[:, dim] - 1.96 * std_recon[:, dim],
-                           mean_recon[:, dim] + 1.96 * std_recon[:, dim],
+                           mean_recon[0, :, dim] - 1.96 * std_recon[0, :, dim],
+                           mean_recon[0, :, dim] + 1.96 * std_recon[0, :, dim],
                            alpha=0.3, color='green', label='95% CI')
         else:
-            ax.plot(times, reconstructed_obs_denorm[:, dim], 'g-',
+            ax.plot(times, reconstructed_obs_denorm[0, :, dim], 'g-',
                    label='Reconstructed', linewidth=2)
 
         ax.set_ylabel(f'Dimension {dim + 1}')

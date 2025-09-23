@@ -84,7 +84,7 @@ def main():
     print(f"\n🏋️ Setting up training...")
 
     learning_rate = 1e-3
-    optimizer = optax.adam(learning_rate)
+    optimizer = nnx.Optimizer(model, optax.adam(learning_rate), wrt=nnx.Param)
 
     # Create trainer
     trainer = ldx.inference.VariationalTrainer(

@@ -109,17 +109,25 @@ class VariationalTrainer:
     def __init__(
         self,
         model,
-        optimizer: optax.GradientTransformation,
+        optimizer,  # Can be optax or nnx.Optimizer
         reconstruction_loss_fn=reconstruction_loss_mse,
         beta_schedule=None
     ):
+        from flax import nnx
+
         self.model = model
-        self.optimizer = optimizer
         self.reconstruction_loss_fn = reconstruction_loss_fn
         self.beta_schedule = beta_schedule or (lambda step: 1.0)
 
-        # Initialize optimizer state
-        self.opt_state = None
+        # Handle both optax and NNX optimizers
+        if isinstance(optimizer, nnx.Optimizer):
+            self.optimizer = optimizer
+            self.use_nnx = True
+            self.opt_state = None
+        else:
+            self.optimizer = optimizer
+            self.use_nnx = False
+            self.opt_state = None
 
     def loss_fn(
         self,
@@ -143,7 +151,7 @@ class VariationalTrainer:
 
     def train_step(
         self,
-        params,
+        model,
         observations: jnp.ndarray,
         times: jnp.ndarray,
         key: jax.random.PRNGKey,
@@ -152,29 +160,48 @@ class VariationalTrainer:
         """Single training step.
 
         Args:
-            params: Model parameters
+            model: Model (NNX style)
             observations: Batch of observations
             times: Batch of times
             key: Random key
             step: Training step number
 
         Returns:
-            Tuple of (updated_params, metrics)
+            Tuple of (updated_model, metrics)
         """
-        # Compute gradients
-        (loss, metrics), grads = jax.value_and_grad(
-            self.loss_fn, has_aux=True
-        )(params, observations, times, key, step)
+        from flax import nnx
 
-        # Initialize optimizer state if needed
-        if self.opt_state is None:
-            self.opt_state = self.optimizer.init(params)
+        def loss_fn(model):
+            beta = self.beta_schedule(step)
+            return elbo_loss(
+                model,
+                model,  # In NNX, model is both container and params
+                observations,
+                times,
+                key,
+                beta,
+                self.reconstruction_loss_fn
+            )
 
-        # Update parameters
-        updates, self.opt_state = self.optimizer.update(grads, self.opt_state, params)
-        params = optax.apply_updates(params, updates)
+        # Compute gradients using NNX
+        (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
 
-        return params, metrics
+        # Update using NNX optimizer
+        if self.use_nnx:
+            self.optimizer.update(model, grads)
+        else:
+            # Fallback to old optax pattern (for backward compatibility)
+            model_params = nnx.state(model, nnx.Param)
+            grad_params = nnx.state(grads, nnx.Param)
+
+            if self.opt_state is None:
+                self.opt_state = self.optimizer.init(model_params)
+
+            updates, self.opt_state = self.optimizer.update(grad_params, self.opt_state, model_params)
+            updated_params = optax.apply_updates(model_params, updates)
+            nnx.update(model, updated_params)
+
+        return model, metrics
 
     def evaluate(
         self,

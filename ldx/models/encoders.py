@@ -96,8 +96,8 @@ class RNNEncoder(nnx.Module):
         """
         batch_size, seq_len, obs_dim = observations.shape
 
-        # Initialize carry state
-        carry = self.gru_cell.initialize_carry((batch_size, obs_dim))
+        # Initialize carry state with zeros
+        carry = jnp.zeros((batch_size, self.hidden_dim))
 
         # Process sequence step by step using scan
         def scan_fn(carry, x):
