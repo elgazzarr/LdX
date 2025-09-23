@@ -18,28 +18,18 @@ def main():
     print("🚀 LatentDynamiX Basic Example: Latent ODE")
     print("=" * 50)
 
-    # Generate synthetic data - multiple spiral trajectories
+    # Generate synthetic data - multiple spiral trajectories using batch generation
     print("📊 Generating synthetic spiral dataset...")
     n_sequences = 10
     n_points = 50
 
-    all_observations = []
-    all_times = []
-
-    for i in range(n_sequences):
-        key, seq_key = jax.random.split(key)
-        times, observations = ldx.datasets.generate_spiral_trajectory(
-            n_points=n_points,
-            n_dims=2,
-            noise_std=0.1,
-            key=seq_key
-        )
-        all_observations.append(observations)
-        all_times.append(times)
-
-    # Stack into batch format
-    batch_observations = jnp.stack(all_observations, axis=0)  # (n_sequences, n_points, 2)
-    batch_times = jnp.stack(all_times, axis=0)  # (n_sequences, n_points)
+    batch_times, batch_observations = ldx.datasets.generate_spiral_trajectory(
+        n_points=n_points,
+        n_sequences=n_sequences,
+        n_dims=2,
+        noise_std=0.1,
+        key=key
+    )
 
     print(f"   - Number of sequences: {n_sequences}")
     print(f"   - Time points per sequence: {n_points}")
@@ -58,7 +48,7 @@ def main():
 
     # Model configuration
     latent_dim = 4
-    obs_dim = observations.shape[1]
+    obs_dim = batch_observations.shape[2]
 
     print(f"\n🔧 Creating LatentODE model...")
     print(f"   - Latent dimension: {latent_dim}")

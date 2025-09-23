@@ -18,45 +18,79 @@ def main():
     print("🚀 LatentDynamiX Example: Irregular Time Series")
     print("=" * 50)
 
-    # Generate synthetic data - Lorenz attractor
+    # Generate synthetic data - multiple Lorenz attractors
     print("📊 Generating Lorenz attractor dataset...")
-    times, observations = ldx.datasets.generate_lorenz_trajectory(
-        n_points=500,
+    n_sequences = 50
+    batch_times, batch_observations = ldx.datasets.generate_lorenz_trajectory(
+        n_points=100,
+        n_sequences=n_sequences,
         dt=0.02,
         noise_std=0.5,
         key=key
     )
 
-    print(f"   - Time points: {len(times)}")
-    print(f"   - Observation shape: {observations.shape}")
+    print(f"   - Number of sequences: {n_sequences}")
+    print(f"   - Time points per sequence: {batch_times.shape[1]}")
+    print(f"   - Batch observation shape: {batch_observations.shape}")
 
-    # Create irregular observations
+    # Create irregular observations for each sequence
     print("🕳️ Creating irregular observations...")
     key, irregular_key = jax.random.split(key)
-    observed_times, observed_data, observation_mask = ldx.datasets.generate_irregular_observations(
-        times, observations, observation_prob=0.6, key=irregular_key
-    )
 
-    print(f"   - Original points: {len(times)}")
-    print(f"   - Observed points: {len(observed_times)} ({len(observed_times)/len(times)*100:.1f}%)")
+    # Generate irregular observations for all sequences
+    all_observed_times = []
+    all_observed_data = []
+    all_observation_masks = []
 
-    # Normalize data using the full dataset to get consistent normalization parameters
-    full_normalized_obs, norm_params = ldx.utils.normalize_data(observations, method="standard")
+    for seq_idx in range(n_sequences):
+        key, seq_key = jax.random.split(key)
+        observed_times, observed_data, observation_mask = ldx.datasets.generate_irregular_observations(
+            batch_times[seq_idx], batch_observations[seq_idx], observation_prob=0.6, key=seq_key
+        )
+        all_observed_times.append(observed_times)
+        all_observed_data.append(observed_data)
+        all_observation_masks.append(observation_mask)
 
-    # For irregular data, we'll work with the full time grid but use masking
-    # Apply the same normalization parameters to observed data
+    # For visualization and evaluation, use the first sequence
+    times = batch_times[0]
+    observations = batch_observations[0]
+    observed_times = all_observed_times[0]
+    observed_data = all_observed_data[0]
+    observation_mask = all_observation_masks[0]
+
+    print(f"   - Original points per sequence: {batch_times.shape[1]}")
+    print(f"   - Example sequence - Observed points: {len(observed_times)} ({len(observed_times)/len(times)*100:.1f}%)")
+
+    # Normalize data using the full batch dataset to get consistent normalization parameters
+    # Reshape to (batch*time, obs_dim) for global normalization
+    reshaped_data = batch_observations.reshape(-1, batch_observations.shape[-1])
+    normalized_reshaped, norm_params = ldx.utils.normalize_data(reshaped_data, method="standard")
+    batch_normalized_obs = normalized_reshaped.reshape(batch_observations.shape)
+
+    # Apply the same normalization parameters to observed data (first sequence for evaluation)
     if norm_params["method"] == "standard":
         normalized_obs = (observed_data - norm_params["mean"]) / norm_params["std"]
     else:
         # Handle other normalization methods if needed
         normalized_obs = observed_data
 
-    # Create training data (reshape for batch processing)
-    train_obs = full_normalized_obs[None, ...]  # Add batch dimension
-    train_times = times[None, ...]  # Add batch dimension
-    train_mask = observation_mask[None, ...]  # Add batch dimension
+    # Stack observation masks for all sequences
+    batch_observation_masks = jnp.stack(all_observation_masks, axis=0)
 
+    # Create train/validation split
+    (train_obs, train_times), (val_obs, val_times) = ldx.utils.create_train_val_split(
+        batch_normalized_obs, batch_times, val_fraction=0.3
+    )
+
+    # Split masks accordingly
+    n_train = train_obs.shape[0]
+    train_mask = batch_observation_masks[:n_train]
+    val_mask = batch_observation_masks[n_train:]
+
+    print(f"   - Training sequences: {train_obs.shape[0]}")
+    print(f"   - Validation sequences: {val_obs.shape[0]}")
     print(f"   - Training shape: {train_obs.shape}")
+    print(f"   - Validation shape: {val_obs.shape}")
 
     # Model configuration
     latent_dim = 3  # Lorenz attractor is 3D
@@ -102,14 +136,30 @@ def main():
     # Training setup
     print(f"\n🏋️ Setting up training for irregular data...")
 
-    learning_rate = 5e-4
+    learning_rate = 1e-3
     optimizer = nnx.Optimizer(model, optax.adam(learning_rate), wrt=nnx.Param)
 
-    # Create trainer with custom loss
+    # Create trainer with custom loss for batch training
+    def batch_masked_reconstruction_loss(predictions, targets):
+        """Batch reconstruction loss that handles multiple sequences."""
+        if isinstance(predictions, tuple):
+            # Gaussian decoder returns (mean, logvar)
+            mean, logvar = predictions
+            var = jnp.exp(logvar)
+            # Negative log-likelihood
+            nll = 0.5 * (jnp.log(2 * jnp.pi) + logvar + (targets - mean)**2 / var)
+            masked_nll = jnp.where(train_mask[..., None], nll, 0.0)
+            return jnp.sum(masked_nll) / jnp.sum(train_mask)
+        else:
+            # Standard MSE
+            mse = (predictions - targets) ** 2
+            masked_mse = jnp.where(train_mask[..., None], mse, 0.0)
+            return jnp.sum(masked_mse) / jnp.sum(train_mask)
+
     trainer = ldx.inference.VariationalTrainer(
         model=model,
         optimizer=optimizer,
-        reconstruction_loss_fn=lambda pred, target: masked_reconstruction_loss(pred, target, train_mask[0]),
+        reconstruction_loss_fn=batch_masked_reconstruction_loss,
         beta_schedule=ldx.inference.create_beta_schedule("linear", warmup_steps=100, end_beta=0.1)
     )
 
@@ -118,18 +168,20 @@ def main():
     print(f"   - Beta annealing with low final beta")
 
     # Training loop
-    n_epochs = 5  # Quick test for visualization fix
+    n_epochs = 100
     print(f"\n🚂 Training for {n_epochs} epochs...")
 
     train_losses = []
 
+    val_losses = []
+
     for epoch in range(n_epochs):
         key, train_key = jax.random.split(key)
 
-        # Training step
+        # Efficient batch training on all training sequences
         model, train_metrics = trainer.train_step(
             model,
-            train_obs,
+            train_obs,  # Full batch
             train_times,
             train_key,
             epoch
@@ -137,58 +189,65 @@ def main():
 
         train_losses.append(train_metrics["total_loss"])
 
-        if epoch % 20 == 0:
-            print(f"   Epoch {epoch:3d}: Loss = {train_metrics['total_loss']:.4f}, "
-                  f"Recon = {train_metrics['reconstruction_loss']:.4f}, "
+        # Validation every few epochs
+        if epoch % 5 == 0:  # More frequent validation since it's now efficient
+            # Evaluate on full validation set efficiently
+            key, val_key = jax.random.split(key)
+            val_metrics = trainer.evaluate(
+                model,
+                val_obs,  # Full validation batch
+                val_times,
+                val_key
+            )
+            val_losses.append(val_metrics["total_loss"])
+
+            print(f"   Epoch {epoch:3d}: Train Loss = {train_metrics['total_loss']:.4f}, "
+                  f"Val Loss = {val_metrics['total_loss']:.4f}, "
+                  f"Train Recon = {train_metrics['reconstruction_loss']:.4f}, "
                   f"KL = {train_metrics['kl_loss']:.4f}")
 
     print("   ✅ Training completed!")
 
-    # Generate predictions for the full time series
-    print(f"\n🔮 Generating predictions for full time series...")
+    # Final evaluation on validation set (already done efficiently during training)
+    print(f"\n🔮 Final evaluation on validation set...")
 
-    key, pred_key = jax.random.split(key)
-
-    # Forward pass
-    reconstructed_obs, latent_mean, latent_logvar, latent_trajectory = model(
-        train_obs, train_times, pred_key
+    key, eval_key = jax.random.split(key)
+    final_val_metrics = trainer.evaluate(
+        model,
+        val_obs,  # Full validation batch - efficient with JIT + vmap
+        val_times,
+        eval_key
     )
 
-    # Extract results
+    print(f"   - Efficiently evaluated on {val_obs.shape[0]} validation sequences using JIT + vmap")
+    print(f"\n📈 Final Validation Metrics:")
+    for metric_name, value in final_val_metrics.items():
+        print(f"   - {metric_name.upper()}: {value:.4f}")
+
+    # For visualization, use the first validation sequence
+    key, vis_key = jax.random.split(key)
+    vis_obs = val_obs[0:1]
+    vis_times = val_times[0:1]
+    vis_mask = val_mask[0]
+
+    reconstructed_obs, latent_mean, latent_logvar, latent_trajectory = model(
+        vis_obs, vis_times, vis_key
+    )
+
+    # Extract results for visualization
     reconstructed_obs = reconstructed_obs[0]  # Remove batch dimension
     latent_trajectory = latent_trajectory[0]
-
-    # Denormalize
     reconstructed_obs_denorm = ldx.utils.denormalize_data(reconstructed_obs, norm_params)
-    # observed_data is already the original (pre-normalization) data, so no need to denormalize
 
-    print(f"   - Reconstructed full time series: {reconstructed_obs_denorm.shape}")
-
-    # Compute metrics on observed points only
+    # Use original data from first validation sequence for visualization
+    times = val_times[0]
+    observations = ldx.utils.denormalize_data(val_obs[0], norm_params)
+    observation_mask = vis_mask
     observed_indices = jnp.where(observation_mask)[0]
-    # Remove batch dimension before indexing
-    pred_observed = reconstructed_obs_denorm[0][observed_indices]  # Shape: (306, 3)
+    observed_times = times[observed_indices]
+    observed_data = observations[observed_indices]
 
-    if isinstance(reconstructed_obs, tuple):
-        # Handle Gaussian predictions
-        mean_pred = reconstructed_obs[0][0][observed_indices]  # Remove batch dim first
-        logvar_pred = reconstructed_obs[1][0][observed_indices]  # Remove batch dim first
-        mean_pred_denorm = ldx.utils.denormalize_data(mean_pred, norm_params)
-
-        metrics = ldx.utils.compute_all_metrics(
-            (mean_pred_denorm, logvar_pred),
-            observed_data,
-            probabilistic=True
-        )
-    else:
-        metrics = ldx.utils.compute_all_metrics(
-            pred_observed,
-            observed_data
-        )
-
-    print(f"\n📈 Evaluation Metrics (on observed points):")
-    for metric_name, value in metrics.items():
-        print(f"   - {metric_name.upper()}: {value:.4f}")
+    print(f"   - Using validation sequence 0 for visualization")
 
     # Visualization
     print(f"\n📊 Creating visualizations...")

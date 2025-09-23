@@ -5,6 +5,7 @@ from typing import Tuple, Dict, Any
 import jax
 import jax.numpy as jnp
 import optax
+from flax import nnx
 
 
 def kl_divergence_gaussian(mean: jnp.ndarray, logvar: jnp.ndarray) -> jnp.ndarray:
@@ -129,6 +130,9 @@ class VariationalTrainer:
             self.use_nnx = False
             self.opt_state = None
 
+        # Note: JIT compilation disabled for NNX compatibility
+        # self.__post_init__()
+
     def loss_fn(
         self,
         params,
@@ -157,12 +161,12 @@ class VariationalTrainer:
         key: jax.random.PRNGKey,
         step: int
     ) -> Tuple[Any, Dict[str, jnp.ndarray]]:
-        """Single training step.
+        """JIT-compiled training step.
 
         Args:
             model: Model (NNX style)
-            observations: Batch of observations
-            times: Batch of times
+            observations: Batch of observations (batch_size, seq_len, obs_dim)
+            times: Batch of times (batch_size, seq_len)
             key: Random key
             step: Training step number
 
@@ -173,15 +177,207 @@ class VariationalTrainer:
 
         def loss_fn(model):
             beta = self.beta_schedule(step)
-            return elbo_loss(
-                model,
-                model,  # In NNX, model is both container and params
-                observations,
-                times,
-                key,
-                beta,
-                self.reconstruction_loss_fn
+
+            # Always expect batched input (batch_size, seq_len, obs_dim)
+            # Use vmap to process batch efficiently
+            keys = jax.random.split(key, observations.shape[0])
+
+            def single_loss(obs, times_seq, key_seq):
+                return elbo_loss(
+                    model,
+                    model,
+                    obs[None, ...],  # Add batch dim for single sequence
+                    times_seq[None, ...],
+                    key_seq,
+                    beta,
+                    self.reconstruction_loss_fn
+                )
+
+            # Vectorize across batch
+            batch_losses_and_metrics = jax.vmap(single_loss, in_axes=(0, 0, 0))(
+                observations, times, keys
             )
+
+            # Average across batch
+            losses, all_metrics = batch_losses_and_metrics
+            avg_loss = jnp.mean(losses)
+
+            # Average metrics
+            avg_metrics = {}
+            for key in all_metrics[0].keys():
+                avg_metrics[key] = jnp.mean(jnp.array([m[key] for m in all_metrics]))
+
+            return avg_loss, avg_metrics
+
+        # Compute gradients using NNX
+        (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+
+        # Update using NNX optimizer
+        if self.use_nnx:
+            self.optimizer.update(model, grads)
+        else:
+            # Fallback to old optax pattern (for backward compatibility)
+            model_params = nnx.state(model, nnx.Param)
+            grad_params = nnx.state(grads, nnx.Param)
+
+            if self.opt_state is None:
+                self.opt_state = self.optimizer.init(model_params)
+
+            updates, self.opt_state = self.optimizer.update(grad_params, self.opt_state, model_params)
+            updated_params = optax.apply_updates(model_params, updates)
+            nnx.update(model, updated_params)
+
+        return model, metrics
+
+    def __post_init__(self):
+        """Create JIT-compiled versions of train_step and evaluate."""
+        # Create JIT-compiled train step
+        def _train_step_fn(model, observations, times, key, step):
+            from flax import nnx
+
+            def loss_fn(model):
+                beta = self.beta_schedule(step)
+
+                # Always expect batched input (batch_size, seq_len, obs_dim)
+                # Use vmap to process batch efficiently
+                keys = jax.random.split(key, observations.shape[0])
+
+                def single_loss(obs, times_seq, key_seq):
+                    return elbo_loss(
+                        model,
+                        model,
+                        obs[None, ...],  # Add batch dim for single sequence
+                        times_seq[None, ...],
+                        key_seq,
+                        beta,
+                        self.reconstruction_loss_fn
+                    )
+
+                # Vectorize across batch
+                batch_losses_and_metrics = jax.vmap(single_loss, in_axes=(0, 0, 0))(
+                    observations, times, keys
+                )
+
+                # Average across batch
+                losses, all_metrics = batch_losses_and_metrics
+                avg_loss = jnp.mean(losses)
+
+                # Average metrics (all_metrics is already a dict with arrays)
+                avg_metrics = {}
+                for metric_key in all_metrics.keys():
+                    avg_metrics[metric_key] = jnp.mean(all_metrics[metric_key])
+
+                return avg_loss, avg_metrics
+
+            # Compute gradients using NNX
+            (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+
+            # Update using NNX optimizer
+            if self.use_nnx:
+                self.optimizer.update(model, grads)
+            else:
+                # Fallback to old optax pattern (for backward compatibility)
+                model_params = nnx.state(model, nnx.Param)
+                grad_params = nnx.state(grads, nnx.Param)
+
+                if self.opt_state is None:
+                    self.opt_state = self.optimizer.init(model_params)
+
+                updates, self.opt_state = self.optimizer.update(grad_params, self.opt_state, model_params)
+                updated_params = optax.apply_updates(model_params, updates)
+                nnx.update(model, updated_params)
+
+            return model, metrics
+
+        # Create JIT-compiled evaluate function
+        def _evaluate_fn(model, observations, times, key):
+            from flax import nnx
+
+            def eval_fn(model):
+                beta = 1.0  # Use full beta for evaluation
+
+                # Always expect batched input (batch_size, seq_len, obs_dim)
+                # Use vmap to process batch efficiently
+                keys = jax.random.split(key, observations.shape[0])
+
+                def single_eval(obs, times_seq, key_seq):
+                    return elbo_loss(
+                        model,
+                        model,
+                        obs[None, ...],  # Add batch dim for single sequence
+                        times_seq[None, ...],
+                        key_seq,
+                        beta,
+                        self.reconstruction_loss_fn
+                    )
+
+                # Vectorize across batch
+                batch_losses_and_metrics = jax.vmap(single_eval, in_axes=(0, 0, 0))(
+                    observations, times, keys
+                )
+
+                # Average across batch
+                losses, all_metrics = batch_losses_and_metrics
+                avg_loss = jnp.mean(losses)
+
+                # Average metrics (all_metrics is already a dict with arrays)
+                avg_metrics = {}
+                for metric_key in all_metrics.keys():
+                    avg_metrics[metric_key] = jnp.mean(all_metrics[metric_key])
+
+                return avg_loss, avg_metrics
+
+            loss, metrics = eval_fn(model)
+            return metrics
+
+        # JIT compile the functions
+        self._jit_train_step = jax.jit(_train_step_fn, static_argnums=(4,))  # step is static
+        self._jit_evaluate = jax.jit(_evaluate_fn)
+
+    def train_step(
+        self,
+        model,
+        observations: jnp.ndarray,
+        times: jnp.ndarray,
+        key: jax.random.PRNGKey,
+        step: int
+    ) -> Tuple[Any, Dict[str, jnp.ndarray]]:
+        """Training step with efficient vmap processing."""
+        from flax import nnx
+
+        def loss_fn(model):
+            beta = self.beta_schedule(step)
+
+            # Always expect batched input (batch_size, seq_len, obs_dim)
+            # Use vmap to process batch efficiently
+            keys = jax.random.split(key, observations.shape[0])
+
+            def single_loss(obs, times_seq, key_seq):
+                return elbo_loss(
+                    model,
+                    model,
+                    obs[None, ...],  # Add batch dim for single sequence
+                    times_seq[None, ...],
+                    key_seq,
+                    beta,
+                    self.reconstruction_loss_fn
+                )
+
+            # Vectorize across batch
+            batch_losses_and_metrics = jax.vmap(single_loss, in_axes=(0, 0, 0))(
+                observations, times, keys
+            )
+
+            # Average across batch
+            losses, all_metrics = batch_losses_and_metrics
+            avg_loss = jnp.mean(losses)
+
+            # Average metrics (all_metrics is already a dict with arrays)
+            avg_metrics = {}
+            for metric_key in all_metrics.keys():
+                avg_metrics[metric_key] = jnp.mean(all_metrics[metric_key])
+
+            return avg_loss, avg_metrics
 
         # Compute gradients using NNX
         (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
@@ -205,23 +401,49 @@ class VariationalTrainer:
 
     def evaluate(
         self,
-        params,
+        model,
         observations: jnp.ndarray,
         times: jnp.ndarray,
         key: jax.random.PRNGKey
     ) -> Dict[str, jnp.ndarray]:
-        """Evaluate model on batch.
+        """Evaluation with efficient vmap processing."""
+        from flax import nnx
 
-        Args:
-            params: Model parameters
-            observations: Batch of observations
-            times: Batch of times
-            key: Random key
+        def eval_fn(model):
+            beta = 1.0  # Use full beta for evaluation
 
-        Returns:
-            Dictionary of evaluation metrics
-        """
-        loss, metrics = self.loss_fn(params, observations, times, key, 0)
+            # Always expect batched input (batch_size, seq_len, obs_dim)
+            # Use vmap to process batch efficiently
+            keys = jax.random.split(key, observations.shape[0])
+
+            def single_eval(obs, times_seq, key_seq):
+                return elbo_loss(
+                    model,
+                    model,
+                    obs[None, ...],  # Add batch dim for single sequence
+                    times_seq[None, ...],
+                    key_seq,
+                    beta,
+                    self.reconstruction_loss_fn
+                )
+
+            # Vectorize across batch
+            batch_losses_and_metrics = jax.vmap(single_eval, in_axes=(0, 0, 0))(
+                observations, times, keys
+            )
+
+            # Average across batch
+            losses, all_metrics = batch_losses_and_metrics
+            avg_loss = jnp.mean(losses)
+
+            # Average metrics (all_metrics is already a dict with arrays)
+            avg_metrics = {}
+            for metric_key in all_metrics.keys():
+                avg_metrics[metric_key] = jnp.mean(all_metrics[metric_key])
+
+            return avg_loss, avg_metrics
+
+        loss, metrics = eval_fn(model)
         return metrics
 
 
