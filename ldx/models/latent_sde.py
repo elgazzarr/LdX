@@ -413,15 +413,6 @@ class LatentSDE(LatentModel):
             alpha = jnp.clip(alpha, 0.0, 1.0)
             return (1 - alpha) * c0 + alpha * c1
 
-        # Check if we need to solve SDE or just return initial state
-        if len(times) == 1 or times[0] == times[-1]:
-            # Single time point or zero time span - return initial state
-            trajectory = jnp.tile(initial_state[None, :], (len(times), 1))
-            if return_kl:
-                return trajectory, jnp.array(0.0)
-            else:
-                return trajectory
-
         if return_kl:
             # Augmented dynamics: state = [z, log_ratio] where log_ratio tracks KL
             augmented_dim = self.latent_dim + 1
@@ -534,11 +525,6 @@ class LatentSDE(LatentModel):
         Returns:
             Trajectory of shape (seq_len, latent_dim)
         """
-        # Check if we need to solve SDE or just return initial state
-        if len(times) == 1 or times[0] == times[-1]:
-            # Single time point or zero time span - return initial state
-            return jnp.tile(initial_state[None, :], (len(times), 1))
-
         def drift(t, y, args):
             return self.prior_drift(y, t)
 

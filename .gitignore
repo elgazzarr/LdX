@@ -52,6 +52,7 @@ coverage.xml
 # Translations
 *.mo
 *.pot
+*.png
 
 #uv 
 uv.lock

@@ -139,7 +139,7 @@ def main():
     # Generate synthetic data - multiple spiral trajectories
     print("\n[1/6] Generating synthetic spiral dataset...")
     n_sequences = 10
-    n_points = 50
+    n_points = 30  # Reduced for faster training
 
     batch_times, batch_observations = ldx.datasets.generate_spiral_trajectory(
         n_points=n_points,
@@ -212,7 +212,7 @@ def main():
     print(f"   ✓ Beta schedule: Linear warmup (50 steps)")
 
     # Training loop
-    n_epochs = 200
+    n_epochs = 50  # Reduced for demo purposes
     print(f"\n[4/6] Training for {n_epochs} epochs...")
 
     train_losses = []
@@ -223,11 +223,12 @@ def main():
         key, train_key = jax.random.split(key)
 
         # Training step on a random training sequence
+        # IMPORTANT: Add batch dimension - trainer expects (batch_size, seq_len, obs_dim)
         train_idx = jax.random.randint(train_key, (), 0, train_obs.shape[0])
         model, train_metrics = trainer.train_step(
             model,
-            train_obs[train_idx],
-            train_times[train_idx],
+            train_obs[train_idx:train_idx+1],  # Keep batch dimension
+            train_times[train_idx:train_idx+1],  # Keep batch dimension
             train_key,
             epoch
         )
@@ -235,14 +236,14 @@ def main():
         train_losses.append(float(train_metrics["total_loss"]))
         kl_losses.append(float(train_metrics["kl_loss"]))
 
-        # Validation every 20 epochs
-        if epoch % 20 == 0:
+        # Validation every 10 epochs
+        if epoch % 10 == 0:
             key, val_key = jax.random.split(key)
             val_idx = jax.random.randint(val_key, (), 0, val_obs.shape[0])
             val_metrics = trainer.evaluate(
                 model,
-                val_obs[val_idx],
-                val_times[val_idx],
+                val_obs[val_idx:val_idx+1],  # Keep batch dimension
+                val_times[val_idx:val_idx+1],  # Keep batch dimension
                 val_key
             )
             val_losses.append(float(val_metrics["total_loss"]))
@@ -269,7 +270,7 @@ def main():
     initial_state = model.reparameterize(mean[0], logvar[0], sample_key)
 
     # Generate multiple samples from the SDE
-    n_samples = 100
+    n_samples = 50  # Reduced for faster execution
     print(f"   - Generating {n_samples} samples from prior...")
 
     key, samples_key = jax.random.split(key)
@@ -487,17 +488,6 @@ def main():
 
     print("\n" + "=" * 60)
     print("✓ Example completed successfully!")
-    print("=" * 60)
-    print("\nGenerated files:")
-    print("  - sde_training_curves.png: Training loss and KL divergence")
-    print("  - sde_prior_predictions.png: Prior (generative) predictions with uncertainty")
-    print("  - sde_posterior_predictions.png: Posterior (conditioned) predictions")
-    print("  - sde_latent_space.png: Latent space dynamics")
-    print("  - sde_prior_vs_posterior.png: Comparison of prior and posterior")
-    print("\nKey insights:")
-    print("  - Prior: Unconditional generation (more uncertain)")
-    print("  - Posterior: Conditioned on observations (less uncertain)")
-    print("  - Confidence intervals capture stochastic uncertainty")
     print("=" * 60)
 
 
