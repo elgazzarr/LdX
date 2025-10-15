@@ -4,7 +4,14 @@ from .base import DynamicsFunction, LatentModel, MLPDynamics
 from .encoders import MLPEncoder, RNNEncoder, CNNEncoder
 from .decoders import MLPDecoder, CNNDecoder, GaussianDecoder
 from .latent_ode import LatentODE, create_latent_ode
-from .latent_sde import LatentSDE, create_latent_sde, DiagonalDiffusion
+from .latent_sde import (
+    LatentSDE,
+    create_latent_sde,
+    DiagonalDiffusion,
+    LatentSDEEncoder,
+    PosteriorDrift,
+    PriorDrift,
+)
 
 __all__ = [
     "DynamicsFunction",
@@ -21,4 +28,7 @@ __all__ = [
     "LatentSDE",
     "create_latent_sde",
     "DiagonalDiffusion",
+    "LatentSDEEncoder",
+    "PosteriorDrift",
+    "PriorDrift",
 ]

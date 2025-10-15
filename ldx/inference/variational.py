@@ -68,7 +68,7 @@ def elbo_loss(
 
     Args:
         model: Latent dynamical model
-        params: Model parameters
+        params: Model parameters (unused, for compatibility)
         observations: Observations of shape (batch_size, seq_len, obs_dim)
         times: Times of shape (batch_size, seq_len) or (seq_len,)
         key: Random key
@@ -78,18 +78,42 @@ def elbo_loss(
     Returns:
         Tuple of (loss, metrics_dict)
     """
+    # Check if model is LatentSDE (supports augmented dynamics)
+    from ldx.models.latent_sde import LatentSDE
+
+    is_latent_sde = isinstance(model, LatentSDE)
+
     # Forward pass (in NNX, call model directly)
-    reconstructed_obs, latent_mean, latent_logvar, latent_trajectory = model(
-        observations, times, key
-    )
+    if is_latent_sde:
+        # LatentSDE returns KL from augmented dynamics
+        forward_result = model(observations, times, key, return_kl=True)
+        reconstructed_obs, latent_mean, latent_logvar, latent_trajectory, kl_divergence = forward_result
+    else:
+        # Fallback for LatentODE or other models
+        forward_result = model(observations, times, key)
+        if len(forward_result) == 5:
+            reconstructed_obs, latent_mean, latent_logvar, latent_trajectory, kl_divergence = forward_result
+        else:
+            reconstructed_obs, latent_mean, latent_logvar, latent_trajectory = forward_result
+            kl_divergence = None
 
     # Reconstruction loss
     recon_loss = reconstruction_loss_fn(reconstructed_obs, observations)
-    recon_loss = jnp.mean(recon_loss)
+    if recon_loss.ndim > 0:
+        recon_loss = jnp.mean(recon_loss)
 
     # KL divergence
-    kl_loss = kl_divergence_gaussian(latent_mean, latent_logvar)
-    kl_loss = jnp.mean(kl_loss)
+    if kl_divergence is not None:
+        # Use KL from augmented dynamics (for LatentSDE)
+        if kl_divergence.ndim > 0:
+            kl_loss = jnp.mean(kl_divergence)
+        else:
+            kl_loss = kl_divergence
+    else:
+        # Use analytical Gaussian KL (for LatentODE)
+        kl_loss = kl_divergence_gaussian(latent_mean, latent_logvar)
+        if kl_loss.ndim > 0:
+            kl_loss = jnp.mean(kl_loss)
 
     # Total ELBO loss
     total_loss = recon_loss + beta * kl_loss
