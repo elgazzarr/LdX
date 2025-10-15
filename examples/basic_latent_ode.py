@@ -15,11 +15,9 @@ def main():
     # Set random seed for reproducibility
     key = jax.random.PRNGKey(42)
 
-    print("🚀 LatentDynamiX Basic Example: Latent ODE")
-    print("=" * 50)
 
     # Generate synthetic data - multiple spiral trajectories using batch generation
-    print("📊 Generating synthetic spiral dataset...")
+    print("Generating synthetic spiral dataset...")
     n_sequences = 10
     n_points = 50
 
@@ -50,7 +48,7 @@ def main():
     latent_dim = 4
     obs_dim = batch_observations.shape[2]
 
-    print(f"\n🔧 Creating LatentODE model...")
+    print(f"\nCreating LatentODE model...")
     print(f"   - Latent dimension: {latent_dim}")
     print(f"   - Observation dimension: {obs_dim}")
 
@@ -71,7 +69,7 @@ def main():
     print("   ✅ Model created successfully")
 
     # Training setup
-    print(f"\n🏋️ Setting up training...")
+    print(f"\nSetting up training...")
 
     learning_rate = 1e-3
     optimizer = nnx.Optimizer(model, optax.adam(learning_rate), wrt=nnx.Param)
@@ -84,13 +82,10 @@ def main():
         beta_schedule=ldx.inference.create_beta_schedule("linear", warmup_steps=50)
     )
 
-    print(f"   - Learning rate: {learning_rate}")
-    print(f"   - Optimizer: Adam")
-    print(f"   - Beta schedule: Linear warmup")
 
     # Training loop
     n_epochs = 50  # Fewer epochs for this basic example
-    print(f"\n🚂 Training for {n_epochs} epochs...")
+    print(f"\nTraining for {n_epochs} epochs...")
 
     train_losses = []
     val_losses = []
@@ -125,10 +120,10 @@ def main():
             print(f"   Epoch {epoch:3d}: Train Loss = {train_metrics['total_loss']:.4f}, "
                   f"Val Loss = {val_metrics['total_loss']:.4f}")
 
-    print("   ✅ Training completed!")
+    print("Training completed!")
 
     # Generate predictions
-    print(f"\n🔮 Generating predictions...")
+    print("\nGenerating predictions...")
 
     key, pred_key = jax.random.split(key)
 
@@ -164,13 +159,11 @@ def main():
         val_obs_denorm
     )
 
-    print(f"\n📈 Evaluation Metrics:")
+    print(f"\nEvaluation Metrics:")
     for metric_name, value in metrics.items():
         print(f"   - {metric_name.upper()}: {value:.4f}")
 
     # Visualization
-    print(f"\n📊 Creating visualizations...")
-
     # Plot training curves (only training for simplicity)
     fig1 = ldx.utils.plot_training_curves(
         train_losses
@@ -179,7 +172,6 @@ def main():
     plt.close()
 
     # Plot trajectory comparison
-    print(f"Debug shapes: times={val_times_sequence.shape}, obs={val_obs_denorm.shape}, pred={reconstructed_obs_denorm.shape}")
     fig2 = ldx.utils.plot_trajectory(
         np.array(val_times_sequence),
         np.array(val_obs_denorm),
@@ -198,24 +190,7 @@ def main():
     plt.savefig("latent_trajectory.png", dpi=150, bbox_inches='tight')
     plt.close()
 
-    # Plot phase portrait if latent_dim >= 2
-    if latent_dim >= 2:
-        fig4 = ldx.utils.plot_phase_portrait(
-            latent_trajectory,
-            dims=(0, 1),
-            title="Latent Phase Portrait"
-        )
-        plt.savefig("phase_portrait.png", dpi=150, bbox_inches='tight')
-        plt.close()
 
-    print("   ✅ Visualizations saved:")
-    print("      - training_curves.png")
-    print("      - trajectory_reconstruction.png")
-    print("      - latent_trajectory.png")
-    if latent_dim >= 2:
-        print("      - phase_portrait.png")
-
-    print(f"\n🎉 Example completed successfully!")
     print("=" * 50)
 
 

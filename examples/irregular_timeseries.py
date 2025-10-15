@@ -168,7 +168,7 @@ def main():
     print(f"   - Beta annealing with low final beta")
 
     # Training loop
-    n_epochs = 100
+    n_epochs = 200
     print(f"\n🚂 Training for {n_epochs} epochs...")
 
     train_losses = []
@@ -190,7 +190,7 @@ def main():
         train_losses.append(train_metrics["total_loss"])
 
         # Validation every few epochs
-        if epoch % 5 == 0:  # More frequent validation since it's now efficient
+        if epoch % 20 == 0:  # More frequent validation since it's now efficient
             # Evaluate on full validation set efficiently
             key, val_key = jax.random.split(key)
             val_metrics = trainer.evaluate(

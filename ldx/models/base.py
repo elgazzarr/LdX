@@ -112,4 +112,5 @@ class MLPDynamics(DynamicsFunction):
 
         # Output layer
         x = self.output_layer(x)
+        x = nnx.tanh(x)  # Ensure bounded output
         return x
