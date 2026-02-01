@@ -250,8 +250,8 @@ class TestLatentSDE:
 
         encoder = ldx.models.LatentSDEEncoder(
             obs_dim=3,
-            hidden_dim=32,
             output_dim=16,
+            hidden_dims=(32, 32),
             rngs=rngs
         )
 

@@ -1,4 +1,8 @@
-"""Inference methods for latent dynamical systems."""
+"""Inference methods for latent dynamical systems.
+
+Currently supports:
+- Variational inference with ELBO loss for latent ODE/SDE models
+"""
 
 from .variational import (
     kl_divergence_gaussian,
@@ -8,17 +12,6 @@ from .variational import (
     VariationalTrainer,
     create_beta_schedule
 )
-from .filtering import (
-    FilterState,
-    ExtendedKalmanFilter,
-    ParticleFilter
-)
-from .smoothing import (
-    SmoothingResult,
-    RauchTungStriebel,
-    TwoFilterSmoother,
-    ParticleSmoother
-)
 
 __all__ = [
     "kl_divergence_gaussian",
@@ -27,11 +20,4 @@ __all__ = [
     "elbo_loss",
     "VariationalTrainer",
     "create_beta_schedule",
-    "FilterState",
-    "ExtendedKalmanFilter",
-    "ParticleFilter",
-    "SmoothingResult",
-    "RauchTungStriebel",
-    "TwoFilterSmoother",
-    "ParticleSmoother",
 ]

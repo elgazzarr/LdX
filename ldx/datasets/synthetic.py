@@ -443,6 +443,145 @@ def generate_van_der_pol_trajectory(
     return times, observations
 
 
+def generate_controlled_oscillator_trajectory(
+    n_sequences: int = 10,
+    n_points: int = 100,
+    dt: float = 0.05,
+    mass: float = 1.0,
+    damping: float = 0.2,
+    stiffness: float = 2.0,
+    control_type: str = "sine",
+    control_amplitude: float = 1.0,
+    control_frequency: float = 0.5,
+    noise_std: float = 0.05,
+    key: jax.random.PRNGKey = None
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Generate forced harmonic oscillator trajectories with external control.
+
+    The system is a mass-spring-damper with external forcing:
+        m * d²x/dt² + c * dx/dt + k * x = u(t)
+
+    Args:
+        n_sequences: Number of sequences to generate
+        n_points: Number of time points per sequence
+        dt: Time step
+        mass: Mass of the oscillator
+        damping: Damping coefficient
+        stiffness: Spring stiffness
+        control_type: Type of control signal ("sine", "step", "random")
+        control_amplitude: Amplitude of control signal
+        control_frequency: Frequency for sine control (Hz)
+        noise_std: Observation noise standard deviation
+        key: Random key
+
+    Returns:
+        Tuple of (times, observations, controls)
+        - times: (n_sequences, n_points)
+        - observations: (n_sequences, n_points, 2) [position, velocity]
+        - controls: (n_sequences, n_points, 1)
+    """
+    if key is None:
+        key = jax.random.PRNGKey(42)
+
+    import diffrax
+
+    times_array = jnp.arange(n_points) * dt
+
+    def forced_oscillator_dynamics(t, state, args):
+        """Dynamics: [dx/dt, dv/dt] where v = dx/dt"""
+        control_fn = args
+        x, v = state
+
+        # Get control at time t
+        u = control_fn(t)
+
+        # d²x/dt² = (u - c*v - k*x) / m
+        acceleration = (u - damping * v - stiffness * x) / mass
+
+        return jnp.array([v, acceleration])
+
+    def generate_control_signal(control_key):
+        """Generate control signal based on type."""
+        if control_type == "sine":
+            # Sinusoidal control with random phase
+            phase = jax.random.uniform(control_key, minval=0, maxval=2*jnp.pi)
+            controls = control_amplitude * jnp.sin(2 * jnp.pi * control_frequency * times_array + phase)
+        elif control_type == "step":
+            # Step function at random time
+            step_time = jax.random.uniform(control_key, minval=0.2, maxval=0.8) * (n_points * dt)
+            controls = control_amplitude * (times_array > step_time).astype(float)
+        elif control_type == "random":
+            # Random walk control
+            increments = jax.random.normal(control_key, (n_points,)) * 0.1
+            controls = jnp.cumsum(increments) * control_amplitude / jnp.sqrt(n_points)
+        else:
+            raise ValueError(f"Unknown control type: {control_type}")
+
+        return controls
+
+    def integrate_single_trajectory(init_state, controls, noise_key):
+        """Integrate a single trajectory with given control."""
+        # Create interpolation function for control
+        def control_fn(t):
+            # Linear interpolation
+            idx = jnp.searchsorted(times_array, t, side='right') - 1
+            idx = jnp.clip(idx, 0, len(times_array) - 2)
+
+            t0, t1 = times_array[idx], times_array[idx + 1]
+            u0, u1 = controls[idx], controls[idx + 1]
+
+            alpha = (t - t0) / (t1 - t0 + 1e-8)
+            alpha = jnp.clip(alpha, 0.0, 1.0)
+            return (1 - alpha) * u0 + alpha * u1
+
+        # Solve ODE
+        term = diffrax.ODETerm(forced_oscillator_dynamics)
+        solver = diffrax.Dopri5()
+
+        solution = diffrax.diffeqsolve(
+            term,
+            solver,
+            t0=times_array[0],
+            t1=times_array[-1],
+            dt0=dt,
+            y0=init_state,
+            args=control_fn,
+            saveat=diffrax.SaveAt(ts=times_array),
+            max_steps=n_points * 10,
+        )
+
+        states = solution.ys  # (n_points, 2)
+
+        # Add observation noise
+        noise = jax.random.normal(noise_key, states.shape) * noise_std
+        return states + noise
+
+    # Generate different initial conditions for each sequence
+    key, init_key, control_key, noise_key = jax.random.split(key, 4)
+
+    # Random initial positions and velocities
+    init_positions = jax.random.uniform(init_key, (n_sequences,), minval=-1.0, maxval=1.0)
+    init_velocities = jax.random.uniform(init_key, (n_sequences,), minval=-0.5, maxval=0.5)
+    initial_states = jnp.stack([init_positions, init_velocities], axis=1)
+
+    # Generate control signals for each sequence
+    control_keys = jax.random.split(control_key, n_sequences)
+    controls = jax.vmap(generate_control_signal)(control_keys)  # (n_sequences, n_points)
+
+    # Integrate all trajectories
+    noise_keys = jax.random.split(noise_key, n_sequences)
+    batch_integrate = jax.vmap(integrate_single_trajectory, in_axes=(0, 0, 0))
+    observations = batch_integrate(initial_states, controls, noise_keys)  # (n_sequences, n_points, 2)
+
+    # Tile times for all sequences
+    times = jnp.tile(times_array, (n_sequences, 1))
+
+    # Reshape controls to (n_sequences, n_points, 1)
+    controls = controls[..., None]
+
+    return times, observations, controls
+
+
 def generate_irregular_observations(
     times: jnp.ndarray,
     observations: jnp.ndarray,
@@ -564,6 +703,11 @@ class SyntheticDataset:
     def van_der_pol(n_points: int = 500, **kwargs):
         """Generate Van der Pol oscillator dataset."""
         return generate_van_der_pol_trajectory(n_points=n_points, **kwargs)
+
+    @staticmethod
+    def controlled_oscillator(n_points: int = 100, **kwargs):
+        """Generate controlled oscillator dataset with external forcing."""
+        return generate_controlled_oscillator_trajectory(n_points=n_points, **kwargs)
 
     @staticmethod
     def partially_observed(true_dim: int = 5, obs_dim: int = 3, **kwargs):

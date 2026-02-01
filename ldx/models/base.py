@@ -9,15 +9,16 @@ from flax import nnx
 
 
 class DynamicsFunction(nnx.Module, ABC):
-    """Abstract base class for dynamics functions f(z, t, θ)."""
+    """Abstract base class for dynamics functions f(z, t, u, θ)."""
 
     @abstractmethod
-    def __call__(self, z: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
-        """Compute dynamics f(z, t).
+    def __call__(self, z: jnp.ndarray, t: jnp.ndarray, u: Optional[jnp.ndarray] = None) -> jnp.ndarray:
+        """Compute dynamics f(z, t, u).
 
         Args:
             z: Latent state of shape (batch_size, latent_dim)
             t: Time of shape (batch_size,) or scalar
+            u: Control input of shape (batch_size, control_dim) or None
 
         Returns:
             Dynamics of shape (batch_size, latent_dim)
@@ -78,15 +79,23 @@ class LatentModel(nnx.Module, ABC):
 
 
 class MLPDynamics(DynamicsFunction):
-    """MLP-based dynamics function."""
+    """MLP-based dynamics function with optional control inputs."""
 
-    def __init__(self, hidden_dims: Tuple[int, ...], latent_dim: int, activation: Callable = jax.nn.tanh, rngs: nnx.Rngs = None):
+    def __init__(
+        self,
+        hidden_dims: Tuple[int, ...],
+        latent_dim: int,
+        control_dim: int = 0,
+        activation: Callable = jax.nn.tanh,
+        rngs: nnx.Rngs = None
+    ):
         self.hidden_dims = hidden_dims
         self.latent_dim = latent_dim
+        self.control_dim = control_dim
         self.activation = activation
 
-        # Initialize layers - input size is latent_dim + 1 (for time)
-        input_dim = latent_dim + 1
+        # Initialize layers - input size is latent_dim + 1 (for time) + control_dim
+        input_dim = latent_dim + 1 + control_dim
         self.layers = []
 
         for hidden_dim in hidden_dims:
@@ -96,7 +105,7 @@ class MLPDynamics(DynamicsFunction):
         # Output layer
         self.output_layer = nnx.Linear(input_dim, latent_dim, rngs=rngs)
 
-    def __call__(self, z: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+    def __call__(self, z: jnp.ndarray, t: jnp.ndarray, u: Optional[jnp.ndarray] = None) -> jnp.ndarray:
         # Concatenate state and time
         t = jnp.asarray(t)  # Ensure t is a JAX array
         if t.ndim == 0:  # scalar time
@@ -104,7 +113,20 @@ class MLPDynamics(DynamicsFunction):
         elif t.ndim == 1:  # batch of times
             t = t[..., None]
 
+        # Start with [z, t]
         x = jnp.concatenate([z, t], axis=-1)
+
+        # Add control if provided
+        if u is not None:
+            # Ensure control matches the batch dimension of z
+            if u.ndim == 1:  # Control is 1D: (control_dim,)
+                # Reshape to match z's batch dimension
+                u = jnp.broadcast_to(u, z.shape[:-1] + (u.shape[0],))
+            x = jnp.concatenate([x, u], axis=-1)
+        elif self.control_dim > 0:
+            # If control expected but not provided, use zeros
+            u_zeros = jnp.zeros(z.shape[:-1] + (self.control_dim,))
+            x = jnp.concatenate([x, u_zeros], axis=-1)
 
         for layer in self.layers:
             x = layer(x)

@@ -33,30 +33,34 @@ class LatentSDEEncoder(nnx.Module):
     def __init__(
         self,
         obs_dim: int,
-        hidden_dim: int,
         output_dim: int,
+        hidden_dims: Tuple[int, ...] = (64, 64),
+        time_encoding_dim: int = 16,
         rngs: nnx.Rngs = None
     ):
         """Initialize the encoder.
 
         Args:
             obs_dim: Dimension of observations
-            hidden_dim: Hidden dimension for MLP
             output_dim: Output context dimension
+            hidden_dims: Hidden layer dimensions for MLP
+            time_encoding_dim: Dimension of positional time encoding
             rngs: Random number generators
         """
         self.obs_dim = obs_dim
-        self.hidden_dim = hidden_dim
         self.output_dim = output_dim
+        self.hidden_dims = hidden_dims
+        self.time_encoding_dim = time_encoding_dim
 
-        # Positional encoding parameters (time encoding dimension = 16)
-        self.time_encoding_dim = 16
+        # Build hidden layers
+        self.hidden_layers = []
+        input_dim = obs_dim + time_encoding_dim
+        for hidden_dim in hidden_dims:
+            self.hidden_layers.append(nnx.Linear(input_dim, hidden_dim, rngs=rngs))
+            input_dim = hidden_dim
 
-        # MLP for encoding [observation, time_encoding] -> context
-        input_dim = obs_dim + self.time_encoding_dim
-        self.fc1 = nnx.Linear(input_dim, hidden_dim, rngs=rngs)
-        self.fc2 = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
-        self.fc3 = nnx.Linear(hidden_dim, output_dim, rngs=rngs)
+        # Output layer
+        self.output_layer = nnx.Linear(input_dim, output_dim, rngs=rngs)
 
     def positional_encoding(self, t: jnp.ndarray) -> jnp.ndarray:
         """Create positional encoding for time using sin/cos functions.
@@ -98,27 +102,29 @@ class LatentSDEEncoder(nnx.Module):
         # Concatenate observation and time encoding
         x = jnp.concatenate([obs, time_encoding], axis=-1)
 
-        # Pass through MLP
-        x = self.fc1(x)
-        x = jax.nn.tanh(x)
-        x = self.fc2(x)
-        x = jax.nn.tanh(x)
-        x = self.fc3(x)
+        # Pass through hidden layers
+        for layer in self.hidden_layers:
+            x = layer(x)
+            x = jax.nn.tanh(x)
+
+        # Output layer
+        x = self.output_layer(x)
 
         return x
 
 
 class PosteriorDrift(nnx.Module):
-    """Posterior drift function conditioned on observations.
+    """Posterior drift function conditioned on observations and optionally control.
 
     This drift function is used during training and is conditioned on
-    the encoded observations at each time step.
+    the encoded observations at each time step and optional control inputs.
     """
 
     def __init__(
         self,
         latent_dim: int,
         context_dim: int,
+        control_dim: int = 0,
         hidden_dims: Tuple[int, ...] = (64, 64),
         rngs: nnx.Rngs = None
     ):
@@ -127,15 +133,17 @@ class PosteriorDrift(nnx.Module):
         Args:
             latent_dim: Dimension of latent state
             context_dim: Dimension of context from encoder
+            control_dim: Dimension of control inputs (0 for no control)
             hidden_dims: Hidden layer dimensions
             rngs: Random number generators
         """
         self.latent_dim = latent_dim
         self.context_dim = context_dim
+        self.control_dim = control_dim
         self.hidden_dims = hidden_dims
 
-        # MLP takes [latent_state, time, context] -> drift
-        input_dim = latent_dim + 1 + context_dim
+        # MLP takes [latent_state, time, context, control] -> drift
+        input_dim = latent_dim + 1 + context_dim + control_dim
         self.layers = []
 
         for hidden_dim in hidden_dims:
@@ -148,14 +156,16 @@ class PosteriorDrift(nnx.Module):
         self,
         z: jnp.ndarray,
         t: jnp.ndarray,
-        context: jnp.ndarray
+        context: jnp.ndarray,
+        u: Optional[jnp.ndarray] = None
     ) -> jnp.ndarray:
-        """Compute posterior drift conditioned on context.
+        """Compute posterior drift conditioned on context and control.
 
         Args:
             z: Latent state of shape (..., latent_dim)
             t: Time of shape (...,) or scalar
             context: Context from encoder of shape (..., context_dim)
+            u: Control input of shape (..., control_dim) or None
 
         Returns:
             Drift of shape (..., latent_dim)
@@ -170,6 +180,16 @@ class PosteriorDrift(nnx.Module):
         # Concatenate [z, t, context]
         x = jnp.concatenate([z, t, context], axis=-1)
 
+        # Add control if provided
+        if u is not None:
+            if u.ndim == 1 and self.control_dim > 1:
+                u = u[None, :]
+            x = jnp.concatenate([x, u], axis=-1)
+        elif self.control_dim > 0:
+            # If control expected but not provided, use zeros
+            u_zeros = jnp.zeros(z.shape[:-1] + (self.control_dim,))
+            x = jnp.concatenate([x, u_zeros], axis=-1)
+
         # Pass through MLP
         for layer in self.layers:
             x = layer(x)
@@ -180,16 +200,17 @@ class PosteriorDrift(nnx.Module):
 
 
 class PriorDrift(nnx.Module):
-    """Prior drift function (unconditional).
+    """Prior drift function with optional control inputs.
 
     This is the generative model drift, used during sampling without
     observations. Often parameterized as linear mean-reverting dynamics
-    or a learned unconditional neural network.
+    or a learned unconditional neural network. Can be conditioned on control.
     """
 
     def __init__(
         self,
         latent_dim: int,
+        control_dim: int = 0,
         hidden_dims: Tuple[int, ...] = (64,),
         use_linear: bool = False,
         rngs: nnx.Rngs = None
@@ -198,21 +219,25 @@ class PriorDrift(nnx.Module):
 
         Args:
             latent_dim: Dimension of latent state
+            control_dim: Dimension of control inputs (0 for no control)
             hidden_dims: Hidden layer dimensions (if not using linear)
             use_linear: If True, use simple linear mean-reverting dynamics
             rngs: Random number generators
         """
         self.latent_dim = latent_dim
+        self.control_dim = control_dim
         self.hidden_dims = hidden_dims
         self.use_linear = use_linear
 
         if use_linear:
-            # Linear mean-reverting: dz = -theta * z * dt + sigma * dW
-            # Just parameterize theta as a learnable parameter
+            # Linear mean-reverting: dz = -theta * z * dt + B * u * dt + sigma * dW
+            # Parameterize theta and control matrix B
             self.theta = nnx.Param(jnp.ones(latent_dim) * 0.1)
+            if control_dim > 0:
+                self.B = nnx.Param(jax.random.normal(rngs(), (latent_dim, control_dim)) * 0.1)
         else:
             # Neural network drift
-            input_dim = latent_dim + 1  # state + time
+            input_dim = latent_dim + 1 + control_dim  # state + time + control
             self.layers = []
 
             for hidden_dim in hidden_dims:
@@ -221,19 +246,23 @@ class PriorDrift(nnx.Module):
 
             self.output_layer = nnx.Linear(input_dim, latent_dim, rngs=rngs)
 
-    def __call__(self, z: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+    def __call__(self, z: jnp.ndarray, t: jnp.ndarray, u: Optional[jnp.ndarray] = None) -> jnp.ndarray:
         """Compute prior drift.
 
         Args:
             z: Latent state of shape (..., latent_dim)
             t: Time of shape (...,) or scalar
+            u: Control input of shape (..., control_dim) or None
 
         Returns:
             Drift of shape (..., latent_dim)
         """
         if self.use_linear:
-            # Mean-reverting: -theta * z
-            return -self.theta.value * z
+            # Mean-reverting: -theta * z + B * u
+            drift = -self.theta.value * z
+            if u is not None and self.control_dim > 0:
+                drift = drift + jnp.dot(u, self.B.value.T)
+            return drift
         else:
             # Neural network drift
             t = jnp.asarray(t)
@@ -243,6 +272,16 @@ class PriorDrift(nnx.Module):
                 t = t[..., None]
 
             x = jnp.concatenate([z, t], axis=-1)
+
+            # Add control if provided
+            if u is not None:
+                if u.ndim == 1 and self.control_dim > 1:
+                    u = u[None, :]
+                x = jnp.concatenate([x, u], axis=-1)
+            elif self.control_dim > 0:
+                # If control expected but not provided, use zeros
+                u_zeros = jnp.zeros(z.shape[:-1] + (self.control_dim,))
+                x = jnp.concatenate([x, u_zeros], axis=-1)
 
             for layer in self.layers:
                 x = layer(x)
@@ -379,7 +418,8 @@ class LatentSDE(LatentModel):
         times: jnp.ndarray,
         observations: jnp.ndarray,
         key: jax.random.PRNGKey,
-        return_kl: bool = False
+        return_kl: bool = False,
+        controls: Optional[jnp.ndarray] = None
     ) -> jnp.ndarray:
         """Sample from posterior (conditioned on observations) using augmented dynamics.
 
@@ -391,6 +431,7 @@ class LatentSDE(LatentModel):
             observations: Observations of shape (seq_len, obs_dim)
             key: Random key
             return_kl: If True, return KL divergence as well
+            controls: Optional control inputs of shape (seq_len, control_dim)
 
         Returns:
             If return_kl=False: Trajectory of shape (seq_len, latent_dim)
@@ -399,19 +440,14 @@ class LatentSDE(LatentModel):
         # Encode observations to get context at each time step
         contexts = self.encode_observations(observations, times)
 
-        # Create interpolation function for contexts
-        def get_context(t):
-            # Linear interpolation of contexts
-            idx = jnp.searchsorted(times, t, side='right') - 1
-            idx = jnp.clip(idx, 0, len(times) - 2)
+        # Create interpolation for contexts using Diffrax LinearInterpolation
+        context_interp = diffrax.LinearInterpolation(ts=times, ys=contexts)
 
-            t0, t1 = times[idx], times[idx + 1]
-            c0, c1 = contexts[idx], contexts[idx + 1]
-
-            # Linear interpolation
-            alpha = (t - t0) / (t1 - t0 + 1e-8)
-            alpha = jnp.clip(alpha, 0.0, 1.0)
-            return (1 - alpha) * c0 + alpha * c1
+        # Create control interpolation using Diffrax LinearInterpolation
+        if controls is not None:
+            control_interp = diffrax.LinearInterpolation(ts=times, ys=controls)
+        else:
+            control_interp = None
 
         if return_kl:
             # Augmented dynamics: state = [z, log_ratio] where log_ratio tracks KL
@@ -420,12 +456,13 @@ class LatentSDE(LatentModel):
 
             def augmented_drift(t, y, args):
                 z = y[: self.latent_dim]
-                context = get_context(t)
+                context = context_interp.evaluate(t)
+                u = control_interp.evaluate(t) if control_interp is not None else None
 
                 # Posterior and prior drifts
-                f_post = self.posterior_drift(z, t, context)
-                f_prior = self.prior_drift(z, t)
-                g = self.diffusion_func(z, t)
+                f_post = self.posterior_drift(z, t, context, u)
+                f_prior = self.prior_drift(z, t, u)
+                g = self.diffusion_func(z, t, u)
 
                 # Compute KL increment: 0.5 * ||g^{-1}(f_post - f_prior)||^2
                 diff = f_post - f_prior
@@ -439,7 +476,8 @@ class LatentSDE(LatentModel):
 
             def augmented_diffusion(t, y, args):
                 z = y[: self.latent_dim]
-                g = self.diffusion_func(z, t)
+                u = control_interp.evaluate(t) if control_interp is not None else None
+                g = self.diffusion_func(z, t, u)
                 # Diffusion only affects z, not log_ratio
                 g_full = jnp.concatenate([g, jnp.array([0.0])])
                 return lineax.DiagonalLinearOperator(g_full)
@@ -476,11 +514,13 @@ class LatentSDE(LatentModel):
         else:
             # Standard posterior sampling without KL tracking
             def drift(t, y, args):
-                context = get_context(t)
-                return self.posterior_drift(y, t, context)
+                context = context_interp.evaluate(t)
+                u = control_interp.evaluate(t) if control_interp is not None else None
+                return self.posterior_drift(y, t, context, u)
 
             def diffusion(t, y, args):
-                g = self.diffusion_func(y, t)
+                u = control_interp.evaluate(t) if control_interp is not None else None
+                g = self.diffusion_func(y, t, u)
                 return lineax.DiagonalLinearOperator(g)
 
             drift_term = diffrax.ODETerm(drift)
@@ -511,7 +551,8 @@ class LatentSDE(LatentModel):
         self,
         initial_state: jnp.ndarray,
         times: jnp.ndarray,
-        key: jax.random.PRNGKey
+        key: jax.random.PRNGKey,
+        controls: Optional[jnp.ndarray] = None
     ) -> jnp.ndarray:
         """Sample from prior (unconditional) for generation.
 
@@ -521,15 +562,24 @@ class LatentSDE(LatentModel):
             initial_state: Initial latent state of shape (latent_dim,)
             times: Times to sample at of shape (seq_len,)
             key: Random key
+            controls: Optional control inputs of shape (seq_len, control_dim)
 
         Returns:
             Trajectory of shape (seq_len, latent_dim)
         """
+        # Create control interpolation using Diffrax LinearInterpolation
+        if controls is not None:
+            control_interp = diffrax.LinearInterpolation(ts=times, ys=controls)
+        else:
+            control_interp = None
+
         def drift(t, y, args):
-            return self.prior_drift(y, t)
+            u = control_interp.evaluate(t) if control_interp is not None else None
+            return self.prior_drift(y, t, u)
 
         def diffusion(t, y, args):
-            g = self.diffusion_func(y, t)
+            u = control_interp.evaluate(t) if control_interp is not None else None
+            g = self.diffusion_func(y, t, u)
             return lineax.DiagonalLinearOperator(g)
 
         # Set up SDE terms
@@ -569,7 +619,8 @@ class LatentSDE(LatentModel):
         observations: jnp.ndarray,
         times: jnp.ndarray,
         key: jax.random.PRNGKey,
-        return_kl: bool = True
+        return_kl: bool = True,
+        controls: Optional[jnp.ndarray] = None
     ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, Optional[jnp.ndarray]]:
         """Forward pass through the model using posterior dynamics.
 
@@ -578,6 +629,7 @@ class LatentSDE(LatentModel):
             times: Shape (seq_len,)
             key: Random key
             return_kl: If True, compute KL divergence via augmented dynamics
+            controls: Optional control inputs of shape (batch_size, seq_len, control_dim) or (seq_len, control_dim)
 
         Returns:
             Tuple of (reconstructed_obs, latent_mean, latent_logvar, latent_trajectory, kl_divergence)
@@ -606,28 +658,57 @@ class LatentSDE(LatentModel):
         else:
             times_flat = times
 
+        # Handle control inputs
+        if controls is not None:
+            if controls.ndim == 3:
+                # Batched controls: (batch_size, seq_len, control_dim)
+                controls_batched = controls
+            else:
+                # Single control sequence: (seq_len, control_dim)
+                # Expand to batch dimension
+                controls_batched = jnp.tile(controls[None, ...], (batch_size, 1, 1))
+        else:
+            controls_batched = None
+
         # Sample trajectories using posterior dynamics (conditioned on observations)
         key, subkey = jax.random.split(key)
         keys = jax.random.split(subkey, batch_size)
 
         if return_kl:
             # Use augmented dynamics to track KL
-            def sample_with_kl(z0, obs, k):
-                return self.sample_posterior(z0, times_flat, obs, k, return_kl=True)
+            if controls_batched is not None:
+                def sample_with_kl(z0, obs, ctrl, k):
+                    return self.sample_posterior(z0, times_flat, obs, k, return_kl=True, controls=ctrl)
 
-            # Vectorize over batch
-            results = jax.vmap(sample_with_kl, in_axes=(0, 0, 0))(
-                initial_states, observations, keys
-            )
+                # Vectorize over batch
+                results = jax.vmap(sample_with_kl, in_axes=(0, 0, 0, 0))(
+                    initial_states, observations, controls_batched, keys
+                )
+            else:
+                def sample_with_kl(z0, obs, k):
+                    return self.sample_posterior(z0, times_flat, obs, k, return_kl=True)
+
+                # Vectorize over batch
+                results = jax.vmap(sample_with_kl, in_axes=(0, 0, 0))(
+                    initial_states, observations, keys
+                )
             latent_trajectory, kl_divergence = results
         else:
             # Standard posterior sampling
-            def sample_no_kl(z0, obs, k):
-                return self.sample_posterior(z0, times_flat, obs, k, return_kl=False)
+            if controls_batched is not None:
+                def sample_no_kl(z0, obs, ctrl, k):
+                    return self.sample_posterior(z0, times_flat, obs, k, return_kl=False, controls=ctrl)
 
-            latent_trajectory = jax.vmap(sample_no_kl, in_axes=(0, 0, 0))(
-                initial_states, observations, keys
-            )
+                latent_trajectory = jax.vmap(sample_no_kl, in_axes=(0, 0, 0, 0))(
+                    initial_states, observations, controls_batched, keys
+                )
+            else:
+                def sample_no_kl(z0, obs, k):
+                    return self.sample_posterior(z0, times_flat, obs, k, return_kl=False)
+
+                latent_trajectory = jax.vmap(sample_no_kl, in_axes=(0, 0, 0))(
+                    initial_states, observations, keys
+                )
             kl_divergence = None
 
         # Decode trajectory
@@ -649,21 +730,29 @@ class LatentSDE(LatentModel):
         observations: jnp.ndarray,
         times: jnp.ndarray,
         key: jax.random.PRNGKey,
-        return_kl: bool = True
+        return_kl: bool = True,
+        controls: Optional[jnp.ndarray] = None
     ):
         """Call method for NNX compatibility."""
-        return self.forward(observations, times, key, return_kl)
+        return self.forward(observations, times, key, return_kl, controls)
 
 
 class DiagonalDiffusion(DynamicsFunction):
-    """Diagonal diffusion function for SDE."""
+    """Diagonal diffusion function for SDE with optional control dependence."""
 
-    def __init__(self, hidden_dims: Tuple[int, ...], latent_dim: int, rngs: nnx.Rngs = None):
+    def __init__(
+        self,
+        hidden_dims: Tuple[int, ...],
+        latent_dim: int,
+        control_dim: int = 0,
+        rngs: nnx.Rngs = None
+    ):
         self.hidden_dims = hidden_dims
         self.latent_dim = latent_dim
+        self.control_dim = control_dim
 
-        # Initialize layers - input size is latent_dim + 1 (for time)
-        input_dim = latent_dim + 1
+        # Initialize layers - input size is latent_dim + 1 (for time) + control_dim
+        input_dim = latent_dim + 1 + control_dim
         self.layers = []
 
         for hidden_dim in hidden_dims:
@@ -673,12 +762,13 @@ class DiagonalDiffusion(DynamicsFunction):
         # Output layer
         self.output_layer = nnx.Linear(input_dim, latent_dim, rngs=rngs)
 
-    def __call__(self, z: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+    def __call__(self, z: jnp.ndarray, t: jnp.ndarray, u: Optional[jnp.ndarray] = None) -> jnp.ndarray:
         """Compute diagonal diffusion coefficients.
 
         Args:
             z: Latent state of shape (batch_size, latent_dim)
             t: Time of shape (batch_size,) or scalar
+            u: Control input of shape (batch_size, control_dim) or None
 
         Returns:
             Diagonal diffusion matrix of shape (batch_size, latent_dim)
@@ -691,6 +781,16 @@ class DiagonalDiffusion(DynamicsFunction):
             t = t[..., None]
 
         x = jnp.concatenate([z, t], axis=-1)
+
+        # Add control if provided
+        if u is not None:
+            if u.ndim == 1 and self.control_dim > 1:
+                u = u[None, :]
+            x = jnp.concatenate([x, u], axis=-1)
+        elif self.control_dim > 0:
+            # If control expected but not provided, use zeros
+            u_zeros = jnp.zeros(z.shape[:-1] + (self.control_dim,))
+            x = jnp.concatenate([x, u_zeros], axis=-1)
 
         for layer in self.layers:
             x = layer(x)
@@ -711,8 +811,10 @@ def create_latent_sde(
     posterior_hidden_dims: Tuple[int, ...] = (64, 64),
     prior_hidden_dims: Tuple[int, ...] = (64,),
     diffusion_hidden_dims: Tuple[int, ...] = (32, 32),
+    control_dim: int = 0,
     context_dim: int = 32,
-    encoder_hidden_dim: int = 64,
+    obs_encoder_hidden_dims: Tuple[int, ...] = (64, 64),
+    obs_encoder_time_encoding_dim: int = 16,
     encoder_type: str = "mlp",
     decoder_type: str = "mlp",
     use_linear_prior: bool = False,
@@ -727,8 +829,10 @@ def create_latent_sde(
         posterior_hidden_dims: Hidden dimensions for posterior drift function
         prior_hidden_dims: Hidden dimensions for prior drift function
         diffusion_hidden_dims: Hidden dimensions for diffusion function
+        control_dim: Dimension of control inputs (0 for no control)
         context_dim: Dimension of context vectors from observation encoder
-        encoder_hidden_dim: Hidden dimension for observation encoder
+        obs_encoder_hidden_dims: Hidden dimensions for observation encoder
+        obs_encoder_time_encoding_dim: Dimension of positional time encoding
         encoder_type: Type of initial encoder ("mlp" or "rnn")
         decoder_type: Type of decoder ("mlp" or "gaussian")
         use_linear_prior: If True, use linear mean-reverting prior drift
@@ -740,8 +844,9 @@ def create_latent_sde(
     # Create observation encoder for context
     obs_encoder = LatentSDEEncoder(
         obs_dim=obs_dim,
-        hidden_dim=encoder_hidden_dim,
         output_dim=context_dim,
+        hidden_dims=obs_encoder_hidden_dims,
+        time_encoding_dim=obs_encoder_time_encoding_dim,
         rngs=rngs
     )
 
@@ -749,6 +854,7 @@ def create_latent_sde(
     posterior_drift = PosteriorDrift(
         latent_dim=latent_dim,
         context_dim=context_dim,
+        control_dim=control_dim,
         hidden_dims=posterior_hidden_dims,
         rngs=rngs
     )
@@ -756,6 +862,7 @@ def create_latent_sde(
     # Create prior drift (unconditional)
     prior_drift = PriorDrift(
         latent_dim=latent_dim,
+        control_dim=control_dim,
         hidden_dims=prior_hidden_dims,
         use_linear=use_linear_prior,
         rngs=rngs
@@ -765,6 +872,7 @@ def create_latent_sde(
     diffusion_func = DiagonalDiffusion(
         diffusion_hidden_dims,
         latent_dim=latent_dim,
+        control_dim=control_dim,
         rngs=rngs
     )
 
