@@ -559,16 +559,6 @@ def main():
     plt.tight_layout()
     plt.savefig("controlled_sde_trajectories_2d.png", dpi=150, bbox_inches='tight')
     plt.close()
-    print("   ✅ Saved: controlled_sde_trajectories_2d.png")
-
-    print("\n" + "=" * 60)
-    print("Example completed successfully!")
-    print("=" * 60)
-    print("\nKey Observations:")
-    print("   - Model learns control-dependent drift and diffusion")
-    print("   - Stochasticity causes variation between samples")
-    print("   - Posterior (conditioned) has less uncertainty than prior")
-    print("=" * 60)
 
 
 if __name__ == "__main__":
