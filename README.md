@@ -70,21 +70,14 @@ key, sample_key = jax.random.split(key)
 # Unconditional generation from the prior (sample initial state from standard normal)
 initial_state = jax.random.normal(sample_key, (model.latent_dim,))
 prior_trajectory = model.sample_trajectory(initial_state, times, sample_key)
-prior_decoded = model.decoder(prior_trajectory)
+generated_observations = model.decoder(prior_trajectory)
 
 # Posterior sampling (smoothing) - encode observations for initial state
 mean, logvar = model.encode(observations[None, ...], times)
 key, enc_key = jax.random.split(sample_key)
 initial_state = model.reparameterize(mean[0], logvar[0], enc_key)
-
-n_samples = 10
-keys = jax.random.split(key, n_samples)
-
-def sample_posterior_fn(k):
-    return model.sample_posterior(initial_state, times, observations, k)
-
-posterior_samples = jax.vmap(sample_posterior_fn)(keys)  # (n_samples, seq_len, latent_dim)
-decoded_samples = jax.vmap(model.decoder)(posterior_samples)  # (n_samples, seq_len, obs_dim)
+posterior_trajectory = model.sample_trajectory(initial_state, times, enc_key)
+posterior_observations = model.decoder(posterior_trajectory)
 ```
 
 ## Examples
