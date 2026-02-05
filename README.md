@@ -22,7 +22,7 @@ pip install -e .
 
 ## Quickstart
 
-Train a Latent SDE on synthetic data using variational inference:
+Train a Latent SDE on synthetic data via variational inference:
 
 ```python
 import jax
@@ -64,16 +64,30 @@ for epoch in range(100):
     if epoch % 20 == 0:
         print(f"Epoch {epoch}: Loss = {metrics['total_loss']:.4f}")
 
-# Sample new trajectories from the prior
+# Sample new trajectories from the prior (unconditional generation) or from the posterior (smoothing)
 key, sample_key = jax.random.split(key)
-mean, logvar = model.encode(observations[0:1], times[0])
-z0 = model.reparameterize(mean[0], logvar[0], sample_key)
-trajectory = model.sample_trajectory(z0, times[0], sample_key)
-decoded = model.decode(trajectory, times[0])
+
+# Unconditional generation from the prior (sample initial state from standard normal)
+initial_state = jax.random.normal(sample_key, (model.latent_dim,))
+prior_trajectory = model.sample_trajectory(initial_state, times, sample_key)
+prior_decoded = model.decoder(prior_trajectory)
+
+# Posterior sampling (smoothing) - encode observations for initial state
+mean, logvar = model.encode(observations[None, ...], times)
+key, enc_key = jax.random.split(sample_key)
+initial_state = model.reparameterize(mean[0], logvar[0], enc_key)
+
+n_samples = 10
+keys = jax.random.split(key, n_samples)
+
+def sample_posterior_fn(k):
+    return model.sample_posterior(initial_state, times, observations, k)
+
+posterior_samples = jax.vmap(sample_posterior_fn)(keys)  # (n_samples, seq_len, latent_dim)
+decoded_samples = jax.vmap(model.decoder)(posterior_samples)  # (n_samples, seq_len, obs_dim)
 ```
 
 ## Examples
 
-- [Basic Latent ODE](examples/basic_latent_ode.py): Learn a latent ODE model on noisy observations of a 2D spiral.
-- [Basic Latent SDE](examples/basic_latent_sde.py): Learn a latent SDE model on noisy observations of a 2D spiral.
-- [Controlled Latent SDE](examples/controlled_latent_sde.py): Learn a controlled latent SDE model on noisy observations of a Ornstein-Uhlenbeck process with control inputs.
+- [Basic Latent ODE](examples/latent_ode.py): Learn a latent ODE model on noisy observations of a 2D spiral.
+- [Basic Latent SDE](examples/latent_sde.py): Learn a latent SDE model on noisy observations of a 2D spiral.
