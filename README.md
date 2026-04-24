@@ -84,3 +84,10 @@ posterior_observations = model.decoder(posterior_trajectory)
 
 - [Basic Latent ODE](examples/latent_ode.py): Learn a latent ODE model on noisy observations of a 2D spiral.
 - [Basic Latent SDE](examples/latent_sde.py): Learn a latent SDE model on noisy observations of a 2D spiral.
+
+## References
+
+If you make use of the toolbox in your work, please cite the repository and this paper:
+
+[ElGazzar, Ahmed, and Marcel van Gerven. Generative Modeling of Neural Dynamics via Latent Stochastic Differential Equations. December 2024. http://arxiv.org/abs/2412.12112.](http://arxiv.org/abs/2412.12112)
+
