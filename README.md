@@ -87,7 +87,7 @@ posterior_observations = model.decoder(posterior_trajectory)
 
 ## References
 
-If you make use of the toolbox in your work, please cite the repository and this paper:
+If you make use of the toolbox in your work, please cite the repository and/or this paper:
 
 [ElGazzar, Ahmed, and Marcel van Gerven. Generative Modeling of Neural Dynamics via Latent Stochastic Differential Equations. December 2024. http://arxiv.org/abs/2412.12112.](http://arxiv.org/abs/2412.12112)
 
