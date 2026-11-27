@@ -7,6 +7,8 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from ._compat import ModuleList
+
 
 class DynamicsFunction(nnx.Module, ABC):
     """Abstract base class for dynamics functions f(z, t, u, θ)."""
@@ -96,7 +98,7 @@ class MLPDynamics(DynamicsFunction):
 
         # Initialize layers - input size is latent_dim + 1 (for time) + control_dim
         input_dim = latent_dim + 1 + control_dim
-        self.layers = []
+        self.layers = ModuleList()
 
         for hidden_dim in hidden_dims:
             self.layers.append(nnx.Linear(input_dim, hidden_dim, rngs=rngs))

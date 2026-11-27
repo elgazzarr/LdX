@@ -14,6 +14,8 @@ from typing import Tuple, Optional, Callable
 import jax
 import jax.numpy as jnp
 from flax import nnx
+
+from ._compat import ModuleList
 import diffrax
 import lineax
 
@@ -53,7 +55,7 @@ class LatentSDEEncoder(nnx.Module):
         self.time_encoding_dim = time_encoding_dim
 
         # Build hidden layers
-        self.hidden_layers = []
+        self.hidden_layers = ModuleList()
         input_dim = obs_dim + time_encoding_dim
         for hidden_dim in hidden_dims:
             self.hidden_layers.append(nnx.Linear(input_dim, hidden_dim, rngs=rngs))
@@ -144,7 +146,7 @@ class PosteriorDrift(nnx.Module):
 
         # MLP takes [latent_state, time, context, control] -> drift
         input_dim = latent_dim + 1 + context_dim + control_dim
-        self.layers = []
+        self.layers = ModuleList()
 
         for hidden_dim in hidden_dims:
             self.layers.append(nnx.Linear(input_dim, hidden_dim, rngs=rngs))
@@ -238,7 +240,7 @@ class PriorDrift(nnx.Module):
         else:
             # Neural network drift
             input_dim = latent_dim + 1 + control_dim  # state + time + control
-            self.layers = []
+            self.layers = ModuleList()
 
             for hidden_dim in hidden_dims:
                 self.layers.append(nnx.Linear(input_dim, hidden_dim, rngs=rngs))
@@ -753,7 +755,7 @@ class DiagonalDiffusion(DynamicsFunction):
 
         # Initialize layers - input size is latent_dim + 1 (for time) + control_dim
         input_dim = latent_dim + 1 + control_dim
-        self.layers = []
+        self.layers = ModuleList()
 
         for hidden_dim in hidden_dims:
             self.layers.append(nnx.Linear(input_dim, hidden_dim, rngs=rngs))

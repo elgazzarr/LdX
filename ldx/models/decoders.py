@@ -6,6 +6,8 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from ._compat import ModuleList
+
 
 class MLPDecoder(nnx.Module):
     """MLP-based decoder for observations."""
@@ -22,7 +24,7 @@ class MLPDecoder(nnx.Module):
         self.latent_dim = latent_dim
 
         # Build hidden layers
-        self.hidden_layers = []
+        self.hidden_layers = ModuleList()
         input_dim = latent_dim
         for hidden_dim in hidden_dims:
             self.hidden_layers.append(nnx.Linear(input_dim, hidden_dim, rngs=rngs))
@@ -93,7 +95,7 @@ class CNNDecoder(nnx.Module):
         self.dense_layer = nnx.Linear(latent_dim, self.initial_size, rngs=rngs)
 
         # Build transpose convolutional layers
-        self.conv_transpose_layers = []
+        self.conv_transpose_layers = ModuleList()
         for i, feature in enumerate(features[1:] + (output_shape[2],)):
             kernel_size = kernel_sizes[i] if i < len(kernel_sizes) else 3
             stride = strides[i] if i < len(strides) else 1
@@ -164,7 +166,7 @@ class GaussianDecoder(nnx.Module):
         self.latent_dim = latent_dim
 
         # Build hidden layers
-        self.hidden_layers = []
+        self.hidden_layers = ModuleList()
         input_dim = latent_dim
         for hidden_dim in hidden_dims:
             self.hidden_layers.append(nnx.Linear(input_dim, hidden_dim, rngs=rngs))
