@@ -67,23 +67,26 @@ for epoch in range(100):
 # Sample new trajectories from the prior (unconditional generation) or from the posterior (smoothing)
 key, sample_key = jax.random.split(key)
 
+# Sampling works on a single sequence with a 1-D time grid
+seq_times, seq_obs = times[0], observations[0]  # (50,), (50, 2)
+
 # Unconditional generation from the prior (sample initial state from standard normal)
 initial_state = jax.random.normal(sample_key, (model.latent_dim,))
-prior_trajectory = model.sample_trajectory(initial_state, times, sample_key)
+prior_trajectory = model.sample_trajectory(initial_state, seq_times, sample_key)
 generated_observations = model.decoder(prior_trajectory)
 
 # Posterior sampling (smoothing) - encode observations for initial state
-mean, logvar = model.encode(observations[None, ...], times)
+mean, logvar = model.encode(seq_obs[None, ...], seq_times)
 key, enc_key = jax.random.split(sample_key)
 initial_state = model.reparameterize(mean[0], logvar[0], enc_key)
-posterior_trajectory = model.sample_trajectory(initial_state, times, enc_key)
+posterior_trajectory = model.sample_trajectory(initial_state, seq_times, enc_key)
 posterior_observations = model.decoder(posterior_trajectory)
 ```
 
 ## Examples
 
-- [Basic Latent ODE](examples/latent_ode.py): Learn a latent ODE model on noisy observations of a 2D spiral.
-- [Basic Latent SDE](examples/latent_sde.py): Learn a latent SDE model on noisy observations of a 2D spiral.
+- [Basic Latent ODE](examples/latent_ode.ipynb): Learn a latent ODE model on noisy observations of a 2D spiral.
+- [Basic Latent SDE](examples/latent_sde.ipynb): Learn a latent SDE model on noisy observations of a 2D spiral.
 
 ## References
 
