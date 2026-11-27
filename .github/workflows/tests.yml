@@ -1,0 +1,43 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  locked:
+    name: pytest (uv.lock, Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install locked environment
+        run: uv sync --frozen --extra dev --python ${{ matrix.python-version }}
+      - name: Run tests
+        run: uv run --frozen pytest -q
+
+  fresh-pip:
+    # Resolves the newest versions allowed by pyproject.toml, as a reviewer
+    # running `pip install -e .` would get, so dependency drift shows up here.
+    name: pytest (fresh pip install, Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pytest
+          pip list | grep -Ei '^(jax|jaxlib|flax|diffrax|equinox|optax|numpy) '
+      - name: Run tests
+        run: python -m pytest -q

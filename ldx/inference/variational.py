@@ -128,6 +128,35 @@ def elbo_loss(
     return total_loss, metrics
 
 
+def _nnx_optimizer_update(optimizer, model, grads) -> None:
+    """Apply ``grads`` with an ``nnx.Optimizer`` across Flax versions.
+
+    Flax >= 0.11 expects ``optimizer.update(model, grads)``; Flax 0.10 expects
+    ``optimizer.update(grads)`` (the model is bound at construction).
+    """
+    import inspect
+
+    if "model" in inspect.signature(optimizer.update).parameters:
+        optimizer.update(model, grads)
+    else:
+        optimizer.update(grads)
+
+
+def _ensure_batched(
+    observations: jnp.ndarray, times: jnp.ndarray
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Return observations as (batch, seq_len, obs_dim) and times as (batch, seq_len).
+
+    A single unbatched sequence of shape (seq_len, obs_dim) is treated as a
+    batch of one, and shared 1-D times are broadcast across the batch.
+    """
+    if observations.ndim == 2:
+        observations = observations[None, ...]
+    if times.ndim == 1:
+        times = jnp.broadcast_to(times, observations.shape[:2])
+    return observations, times
+
+
 class VariationalTrainer:
     """Trainer for variational latent dynamical models."""
 
@@ -238,11 +267,14 @@ class VariationalTrainer:
 
         # Update using NNX optimizer
         if self.use_nnx:
-            self.optimizer.update(model, grads)
+            _nnx_optimizer_update(self.optimizer, model, grads)
         else:
             # Fallback to old optax pattern (for backward compatibility)
             model_params = nnx.state(model, nnx.Param)
-            grad_params = nnx.state(grads, nnx.Param)
+            # nnx.value_and_grad already returns a State holding only the
+            # Param gradients; calling nnx.state() on it again does not
+            # yield a tree that matches model_params.
+            grad_params = grads
 
             if self.opt_state is None:
                 self.opt_state = self.optimizer.init(model_params)
@@ -298,7 +330,7 @@ class VariationalTrainer:
 
             # Update using NNX optimizer
             if self.use_nnx:
-                self.optimizer.update(model, grads)
+                _nnx_optimizer_update(self.optimizer, model, grads)
             else:
                 # Fallback to old optax pattern (for backward compatibility)
                 model_params = nnx.state(model, nnx.Param)
@@ -369,6 +401,8 @@ class VariationalTrainer:
         """Training step with efficient vmap processing."""
         from flax import nnx
 
+        observations, times = _ensure_batched(observations, times)
+
         def loss_fn(model):
             beta = self.beta_schedule(step)
 
@@ -408,11 +442,14 @@ class VariationalTrainer:
 
         # Update using NNX optimizer
         if self.use_nnx:
-            self.optimizer.update(model, grads)
+            _nnx_optimizer_update(self.optimizer, model, grads)
         else:
             # Fallback to old optax pattern (for backward compatibility)
             model_params = nnx.state(model, nnx.Param)
-            grad_params = nnx.state(grads, nnx.Param)
+            # nnx.value_and_grad already returns a State holding only the
+            # Param gradients; calling nnx.state() on it again does not
+            # yield a tree that matches model_params.
+            grad_params = grads
 
             if self.opt_state is None:
                 self.opt_state = self.optimizer.init(model_params)
@@ -432,6 +469,8 @@ class VariationalTrainer:
     ) -> Dict[str, jnp.ndarray]:
         """Evaluation with efficient vmap processing."""
         from flax import nnx
+
+        observations, times = _ensure_batched(observations, times)
 
         def eval_fn(model):
             beta = 1.0  # Use full beta for evaluation

@@ -6,6 +6,20 @@ import jax.numpy as jnp
 import numpy as np
 
 
+def _squeeze_single_sequence(
+    times: jnp.ndarray, observations: jnp.ndarray, n_sequences: int
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Drop the leading batch axis when a single sequence was requested.
+
+    The generators below document that ``n_sequences=1`` returns
+    ``times`` of shape ``(n_points,)`` and ``observations`` of shape
+    ``(n_points, dim)``; batched shapes are returned otherwise.
+    """
+    if n_sequences == 1:
+        return times[0], observations[0]
+    return times, observations
+
+
 def generate_spiral_trajectory(
     n_points: int = 100,
     n_sequences: int = 1,
@@ -66,7 +80,7 @@ def generate_spiral_trajectory(
     observations = batch_generate(phase_offsets, radius_scales, noise_keys)
     times = jnp.tile(jnp.linspace(0, 4 * jnp.pi, n_points), (n_sequences, 1))
 
-    return times, observations
+    return _squeeze_single_sequence(times, observations, n_sequences)
 
 
 def generate_lorenz_trajectory(
@@ -129,8 +143,11 @@ def generate_lorenz_trajectory(
 
         # Time points
         t0 = 0.0
-        t1 = dt * (n_points - 1)
-        saveat = diffrax.SaveAt(ts=jnp.arange(n_points) * dt)
+        save_ts = jnp.arange(n_points) * dt
+        # Use the last save time as t1 so float rounding in arange * dt can
+        # never place a save time beyond t1 (diffrax rejects that).
+        t1 = save_ts[-1]
+        saveat = diffrax.SaveAt(ts=save_ts)
 
         # Solve ODE
         solution = diffrax.diffeqsolve(
@@ -159,7 +176,7 @@ def generate_lorenz_trajectory(
     observations = batch_integrate(initial_state, noise_keys)  # (n_sequences, n_points, 3)
     times = jnp.tile(jnp.arange(n_points) * dt, (n_sequences, 1))  # (n_sequences, n_points)
 
-    return times, observations
+    return _squeeze_single_sequence(times, observations, n_sequences)
 
 
 def generate_pendulum_trajectory(
@@ -223,8 +240,11 @@ def generate_pendulum_trajectory(
         solver = diffrax.Dopri5()
 
         t0 = 0.0
-        t1 = dt * (n_points - 1)
-        saveat = diffrax.SaveAt(ts=jnp.arange(n_points) * dt)
+        save_ts = jnp.arange(n_points) * dt
+        # Use the last save time as t1 so float rounding in arange * dt can
+        # never place a save time beyond t1 (diffrax rejects that).
+        t1 = save_ts[-1]
+        saveat = diffrax.SaveAt(ts=save_ts)
 
         y0 = jnp.array([init_angle, init_vel])
 
@@ -260,7 +280,7 @@ def generate_pendulum_trajectory(
     observations = batch_integrate(initial_angles, initial_velocities, noise_keys)
     times = jnp.tile(jnp.arange(n_points) * dt, (n_sequences, 1))
 
-    return times, observations
+    return _squeeze_single_sequence(times, observations, n_sequences)
 
 
 def generate_oscillator_trajectory(
@@ -346,7 +366,7 @@ def generate_oscillator_trajectory(
     observations = batch_generate(frequencies, dampings, amplitudes, phases, noise_keys)
     times = jnp.tile(jnp.arange(n_points) * dt, (n_sequences, 1))
 
-    return times, observations
+    return _squeeze_single_sequence(times, observations, n_sequences)
 
 
 def generate_van_der_pol_trajectory(
@@ -410,8 +430,11 @@ def generate_van_der_pol_trajectory(
         solver = diffrax.Dopri5()
 
         t0 = 0.0
-        t1 = dt * (n_points - 1)
-        saveat = diffrax.SaveAt(ts=jnp.arange(n_points) * dt)
+        save_ts = jnp.arange(n_points) * dt
+        # Use the last save time as t1 so float rounding in arange * dt can
+        # never place a save time beyond t1 (diffrax rejects that).
+        t1 = save_ts[-1]
+        saveat = diffrax.SaveAt(ts=save_ts)
 
         solution = diffrax.diffeqsolve(
             term,
@@ -440,7 +463,7 @@ def generate_van_der_pol_trajectory(
     observations = batch_integrate(mus, initial_states, noise_keys)
     times = jnp.tile(jnp.arange(n_points) * dt, (n_sequences, 1))
 
-    return times, observations
+    return _squeeze_single_sequence(times, observations, n_sequences)
 
 
 def generate_controlled_oscillator_trajectory(
